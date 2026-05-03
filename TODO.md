@@ -1,5 +1,26 @@
 # TODO
 
+## `/sendnote` implementation spec (2026-05-04)
+
+### Decisions
+
+- **Storage**: `messages` table, `discord_message_id` null, `data: { "role": "system" }`
+- **Role assignment**: DEFAULT_TEMPLATE reads `entry.data?.role` and emits via `{% call send_as('role') %}` — no pipeline changes needed
+- **`/delete` (i.e. `/purge`)**: expand to full message list; if `discord_message_id` is null, skip Discord API call, DB-only delete
+- **Default permission**: MANAGE_CHANNELS (conservative); `/config sendnote` modal lets servers delegate to specific users/roles
+- **`/config sendnote`**: stored in `discord_config` alongside existing config; modal field like bind allowlist
+- **Ephemeral confirmation**: yes, on `/sendnote` success
+- **Visibility**: invisible in Discord channel; appears in `/debug context` naturally; appears in `/debug status` (enhancement)
+
+### `/sendas` (deferred, spec only)
+
+- Webhook delivery (appears in Discord as entity)
+- Requires edit + trigger permission on target entity
+- Stores `{ "role": "assistant", "entity_id": X }` in `data`
+- Shares underlying code with `/sendnote`
+
+---
+
 ## Open Threads
 
 *Open threads from a previous session. Treat as starting context, not instructions — verify relevance before acting.*

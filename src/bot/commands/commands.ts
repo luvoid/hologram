@@ -36,6 +36,7 @@ import {
   formatMessagesForContext,
   getFilteredMessages,
   resolvePersona,
+  addSystemNote,
 } from "../../db/discord";
 import { parsePermissionDirectives, isUserBlacklisted, isUserAllowed, evaluateFacts, createBaseContext } from "../../logic/expr";
 import { formatEntityDisplay } from "../../ai/context";
@@ -43,8 +44,8 @@ import { sendResponse } from "../client";
 import { debug } from "../../logger";
 import { elideText, buildDefaultValues, buildEntries, chunkContent, type ResolvedData } from "./helpers";
 export { chunkContent, elideText, buildDefaultValues, buildEntries, type ResolvedData };
-import { canUserEdit, canUserView, canUserUse, canUserDelete, canUserBindInLocation, canUserPersonaInLocation } from "./cmd-permissions";
-export { canUserEdit, canUserView, canUserUse, canUserDelete, canUserBindInLocation, canUserPersonaInLocation };
+import { canUserEdit, canUserView, canUserUse, canUserDelete, canUserBindInLocation, canUserPersonaInLocation, canUserSendNoteInLocation } from "./cmd-permissions";
+export { canUserEdit, canUserView, canUserUse, canUserDelete, canUserBindInLocation, canUserPersonaInLocation, canUserSendNoteInLocation };
 
 // =============================================================================
 // /create - Create entity
@@ -632,19 +633,21 @@ registerCommand({
 // /config - Configure channel/server bind permissions
 // =============================================================================
 
-const CONFIG_FIELDS = ["bind", "persona", "blacklist"] as const;
+const CONFIG_FIELDS = ["bind", "persona", "blacklist", "sendnote"] as const;
 type ConfigField = (typeof CONFIG_FIELDS)[number];
 
 const CONFIG_LABELS: Record<ConfigField, string> = {
   bind: "Bind access",
   persona: "Persona access",
   blacklist: "Blacklist",
+  sendnote: "Sendnote access",
 };
 
 const CONFIG_DESCRIPTIONS: Record<ConfigField, string> = {
   bind: "Who can bind entities here. Blank = everyone.",
   persona: "Who can use personas here. Blank = everyone.",
   blacklist: "Blocked from all binding operations.",
+  sendnote: "Who can add system notes (/sendnote). Blank = Manage Channels required.",
 };
 
 function buildConfigLabels(discordId: string, discordType: "channel" | "guild"): unknown[] {
@@ -736,9 +739,10 @@ registerModalHandler("config", async (bot, interaction, _values) => {
   const bindEntries = buildEntries(selectValues.config_bind ?? [], resolved as ResolvedData | undefined);
   const personaEntries = buildEntries(selectValues.config_persona ?? [], resolved as ResolvedData | undefined);
   const blacklistEntries = buildEntries(selectValues.config_blacklist ?? [], resolved as ResolvedData | undefined);
+  const sendnoteEntries = buildEntries(selectValues.config_sendnote ?? [], resolved as ResolvedData | undefined);
 
   // If all fields are empty, delete the row entirely
-  if (bindEntries.length === 0 && personaEntries.length === 0 && blacklistEntries.length === 0) {
+  if (bindEntries.length === 0 && personaEntries.length === 0 && blacklistEntries.length === 0 && sendnoteEntries.length === 0) {
     deleteDiscordConfig(discordId, discordType);
     const scopeLabel = discordType === "guild" ? "server" : "channel";
     await respond(bot, interaction, `Cleared all bind settings for this ${scopeLabel} (everyone can bind)`, true);
@@ -749,6 +753,7 @@ registerModalHandler("config", async (bot, interaction, _values) => {
     config_bind: bindEntries.length > 0 ? JSON.stringify(bindEntries) : null,
     config_persona: personaEntries.length > 0 ? JSON.stringify(personaEntries) : null,
     config_blacklist: blacklistEntries.length > 0 ? JSON.stringify(blacklistEntries) : null,
+    config_sendnote: sendnoteEntries.length > 0 ? JSON.stringify(sendnoteEntries) : null,
   });
 
   const scopeLabel = discordType === "guild" ? "server" : "channel";
@@ -832,6 +837,7 @@ registerModalHandler("config-chain", async (bot, interaction, values) => {
       config_persona: existing.persona !== null ? JSON.stringify(existing.persona) : null,
       config_blacklist: existing.blacklist !== null ? JSON.stringify(existing.blacklist) : null,
       config_chain_limit: null,
+      config_sendnote: existing.sendnote !== null ? JSON.stringify(existing.sendnote) : null,
     });
     await respond(bot, interaction, `Cleared chain limit override for this ${scopeLabel} (inheriting default)`, true);
     return;
@@ -852,6 +858,7 @@ registerModalHandler("config-chain", async (bot, interaction, values) => {
     config_persona: existing.persona !== null ? JSON.stringify(existing.persona) : null,
     config_blacklist: existing.blacklist !== null ? JSON.stringify(existing.blacklist) : null,
     config_chain_limit: value,
+    config_sendnote: existing.sendnote !== null ? JSON.stringify(existing.sendnote) : null,
   });
 
   const msg = value === 0
@@ -1002,6 +1009,67 @@ registerCommand({
       systemTemplate: entity.system_template,
       exprContext: ctx2,
     }]);
+  },
+});
+
+// =============================================================================
+// /sendnote - Add an invisible system-role note to the channel's AI context
+// =============================================================================
+
+registerCommand({
+  name: "sendnote",
+  description: "Add an invisible system-role note to this channel's AI context",
+  options: [
+    {
+      name: "content",
+      description: "The note content to inject into context",
+      type: ApplicationCommandOptionTypes.String,
+      required: true,
+    },
+  ],
+  async handler(ctx, options) {
+    const content = options.content as string;
+
+    if (!content.trim()) {
+      await respond(ctx.bot, ctx.interaction, "Note content cannot be empty", true);
+      return;
+    }
+
+    if (!ctx.guildId) {
+      // DMs: require Manage Channels fallback — DMs have no server config, so we
+      // use the MANAGE_CHANNELS gate unconditionally.
+      const memberPerms = ctx.interaction.member?.permissions;
+      const hasManageChannels = memberPerms != null && typeof memberPerms === "object" && (
+        memberPerms.has("MANAGE_CHANNELS") || memberPerms.has("ADMINISTRATOR")
+      );
+      if (!hasManageChannels) {
+        await respond(ctx.bot, ctx.interaction, "Adding notes requires **Manage Channels** permission. Admins can delegate via `/config sendnote`.", true);
+        return;
+      }
+    } else {
+      // Check sendnote allowlist; fall back to MANAGE_CHANNELS if not configured
+      const allowlistResult = canUserSendNoteInLocation(ctx.userId, ctx.username, ctx.userRoles, ctx.channelId, ctx.guildId);
+      if (allowlistResult === null) {
+        // No explicit allowlist — check Discord permission gate
+        const memberPerms = ctx.interaction.member?.permissions;
+        const hasManageChannels = memberPerms != null && typeof memberPerms === "object" && (
+          memberPerms.has("MANAGE_CHANNELS") || memberPerms.has("ADMINISTRATOR")
+        );
+        if (!hasManageChannels) {
+          await respond(ctx.bot, ctx.interaction, "Adding notes requires **Manage Channels** permission. Admins can delegate via `/config sendnote`.", true);
+          return;
+        }
+      } else if (!allowlistResult) {
+        await respond(ctx.bot, ctx.interaction, "You don't have permission to add notes here", true);
+        return;
+      }
+    }
+
+    addSystemNote(ctx.channelId, ctx.userId, ctx.username, content.trim());
+
+    debug("System note added", { channel: ctx.channelId, user: ctx.username });
+
+    await respond(ctx.bot, ctx.interaction, "Note added to context.", true);
   },
 });
 

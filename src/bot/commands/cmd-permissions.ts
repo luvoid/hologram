@@ -253,3 +253,25 @@ export function canUserPersonaInLocation(userId: string, username: string, userR
   // Check allowlist
   return config.persona.some(entry => matchesUserEntry(entry, userId, username, userRoles));
 }
+
+/**
+ * Check if a user can add system notes (/sendnote) in a location.
+ * Default gate is MANAGE_CHANNELS (checked in command handler via Discord permissions).
+ * When a `/config sendnote` allowlist exists for the channel/guild, it replaces the
+ * MANAGE_CHANNELS gate — this function only checks the allowlist.
+ * Returns null when no allowlist is configured (caller uses the Discord permission gate).
+ * Returns true/false when an explicit allowlist is present.
+ */
+export function canUserSendNoteInLocation(userId: string, username: string, userRoles: string[], channelId?: string, guildId?: string): boolean | null {
+  const config = resolveDiscordConfig(channelId, guildId);
+
+  if (!config.sendnote) {
+    // No explicit allowlist — caller falls back to MANAGE_CHANNELS gate
+    return null;
+  }
+
+  // Check blacklist first
+  if (config.blacklist?.some(entry => matchesUserEntry(entry, userId, username, userRoles))) return false;
+
+  return config.sendnote.some(entry => matchesUserEntry(entry, userId, username, userRoles));
+}

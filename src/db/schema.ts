@@ -212,6 +212,7 @@ export function initSchema(db: Database, { useVec0 = true } = {}) {
       config_chain_limit INTEGER,
       config_rate_channel_per_min INTEGER,
       config_rate_owner_per_min INTEGER,
+      config_sendnote TEXT,
       PRIMARY KEY (discord_id, discord_type)
     )
   `);

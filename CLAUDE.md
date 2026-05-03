@@ -137,7 +137,7 @@ Facts:
 entities         -- id, name, owned_by, created_at, template, system_template
 facts            -- id, entity_id, content, created_at, updated_at
 discord_entities -- discord_id, discord_type, entity_id, scope_guild_id, scope_channel_id
-discord_config   -- discord_id, discord_type, config_bind, config_persona, config_blacklist (bind permissions)
+discord_config   -- discord_id, discord_type, config_bind, config_persona, config_blacklist, config_sendnote (bind/note permissions)
 fact_embeddings  -- (planned) vector search
 messages         -- channel_id, user_id, author_name, content, discord_message_id, data, created_at
 welcomed_users   -- discord_id, welcomed_at (onboarding DM tracking)
@@ -222,8 +222,9 @@ Permission lists are stored as JSON arrays in entity config columns. Role IDs us
 | `/transfer <entity> <user>` | Transfer ownership |
 | `/bind <target> <entity>` | Bind channel/user (requires entity edit/use + Manage Channels for channel-bind or Manage Server for server-bind by default; `/config bind` lets admins delegate to others) |
 | `/unbind <target> <entity>` | Unbind channel/user (same permissions as bind) |
-| `/config <scope>` | Configure channel/server bind permissions (Manage Channels) |
-| `/debug [status]` | Channel state (default) |
+| `/config <scope>` | Configure channel/server bind/sendnote permissions (Manage Channels). Includes `sendnote` allowlist field. |
+| `/sendnote <content>` | Add an invisible system-role note to the channel's AI context (requires Manage Channels or `/config sendnote` allowlist) |
+| `/debug [status]` | Channel state (default); shows system note count and recent note previews |
 | `/debug prompt [entity]` | Show system prompt for entity |
 | `/debug context [entity]` | Show message context for entity |
 | `/debug rag [entity] [query]` | Show embedding status + RAG retrieval results |

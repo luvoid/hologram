@@ -344,6 +344,7 @@ export interface DiscordConfig {
   config_chain_limit: number | null;
   config_rate_channel_per_min: number | null;
   config_rate_owner_per_min: number | null;
+  config_sendnote: string | null;
 }
 
 export interface ResolvedDiscordConfig {
@@ -353,6 +354,7 @@ export interface ResolvedDiscordConfig {
   chainLimit: number | null;
   rateChannel: number | null;
   rateOwner: number | null;
+  sendnote: string[] | null;
 }
 
 export function getDiscordConfig(discordId: string, discordType: "channel" | "guild"): DiscordConfig | null {
@@ -372,19 +374,21 @@ export function setDiscordConfig(
     config_chain_limit?: number | null;
     config_rate_channel_per_min?: number | null;
     config_rate_owner_per_min?: number | null;
+    config_sendnote?: string | null;
   }
 ): void {
   const db = getDb();
   db.prepare(`
-    INSERT INTO discord_config (discord_id, discord_type, config_bind, config_persona, config_blacklist, config_chain_limit, config_rate_channel_per_min, config_rate_owner_per_min)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO discord_config (discord_id, discord_type, config_bind, config_persona, config_blacklist, config_chain_limit, config_rate_channel_per_min, config_rate_owner_per_min, config_sendnote)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(discord_id, discord_type) DO UPDATE SET
       config_bind = excluded.config_bind,
       config_persona = excluded.config_persona,
       config_blacklist = excluded.config_blacklist,
       config_chain_limit = excluded.config_chain_limit,
       config_rate_channel_per_min = excluded.config_rate_channel_per_min,
-      config_rate_owner_per_min = excluded.config_rate_owner_per_min
+      config_rate_owner_per_min = excluded.config_rate_owner_per_min,
+      config_sendnote = excluded.config_sendnote
   `).run(
     discordId,
     discordType,
@@ -394,6 +398,7 @@ export function setDiscordConfig(
     config.config_chain_limit ?? null,
     config.config_rate_channel_per_min ?? null,
     config.config_rate_owner_per_min ?? null,
+    config.config_sendnote ?? null,
   );
 }
 
@@ -423,6 +428,7 @@ export function resolveDiscordConfig(channelId: string | undefined, guildId: str
   const rawChainLimit = channelConfig?.config_chain_limit ?? guildConfig?.config_chain_limit ?? null;
   const rawRateChannel = channelConfig?.config_rate_channel_per_min ?? guildConfig?.config_rate_channel_per_min ?? null;
   const rawRateOwner = channelConfig?.config_rate_owner_per_min ?? guildConfig?.config_rate_owner_per_min ?? null;
+  const rawSendnote = channelConfig?.config_sendnote ?? guildConfig?.config_sendnote ?? null;
 
   return {
     bind: safeParseFallback<string[] | null>(rawBind, null),
@@ -431,6 +437,7 @@ export function resolveDiscordConfig(channelId: string | undefined, guildId: str
     chainLimit: rawChainLimit,
     rateChannel: rawRateChannel,
     rateOwner: rawRateOwner,
+    sendnote: safeParseFallback<string[] | null>(rawSendnote, null),
   };
 }
 
@@ -562,6 +569,8 @@ export interface MessageData {
   stickers?: StickerData[];
   attachments?: AttachmentData[];
   components?: DiscordComponentData[];
+  /** Used by system notes (/sendnote) — marks this message as a system-role context entry */
+  role?: string;
 }
 
 export function parseMessageData(raw: string | null): MessageData | null {
@@ -658,6 +667,77 @@ export function deleteMessageByDiscordId(discordMessageId: string): boolean {
 export function deleteMessageById(id: number): boolean {
   const db = getDb();
   const result = db.prepare(`DELETE FROM messages WHERE id = ?`).run(id);
+  return result.changes > 0;
+}
+
+/**
+ * Insert an invisible system-role note into a channel's message history.
+ * Notes have `discord_message_id = null` and `data = { "role": "system" }`.
+ * They appear in the AI context but are never posted to Discord.
+ */
+export function addSystemNote(
+  channelId: string,
+  authorId: string,
+  authorName: string,
+  content: string,
+): Message {
+  const db = getDb();
+  const data: MessageData = { role: "system" };
+  return db.prepare(`
+    INSERT INTO messages (channel_id, author_id, author_name, content, discord_message_id, data)
+    VALUES (?, ?, ?, ?, NULL, ?)
+    RETURNING *
+  `).get(channelId, authorId, authorName, content, JSON.stringify(data)) as Message;
+}
+
+/**
+ * Count system notes (role="system" messages) visible in a channel's context.
+ * Respects the forget time if set.
+ */
+export function getSystemNoteCount(channelId: string): number {
+  const db = getDb();
+  const forgetTime = getChannelForgetTime(channelId);
+
+  const timeClause = forgetTime ? ` AND created_at > ?` : "";
+  const timeParams: string[] = forgetTime ? [forgetTime] : [];
+
+  const row = db.prepare(`
+    SELECT COUNT(*) as count FROM messages
+    WHERE channel_id = ? AND discord_message_id IS NULL
+      AND json_extract(data, '$.role') = 'system'${timeClause}
+  `).get(channelId, ...timeParams) as { count: number };
+  return row.count;
+}
+
+/**
+ * Get system notes in a channel for /debug status display, ordered newest-first.
+ */
+export function getRecentSystemNotes(channelId: string, limit = 5): Message[] {
+  const db = getDb();
+  const forgetTime = getChannelForgetTime(channelId);
+
+  const timeClause = forgetTime ? ` AND created_at > ?` : "";
+  const timeParams: string[] = forgetTime ? [forgetTime] : [];
+
+  return db.prepare(`
+    SELECT * FROM messages
+    WHERE channel_id = ? AND discord_message_id IS NULL
+      AND json_extract(data, '$.role') = 'system'${timeClause}
+    ORDER BY created_at DESC, id DESC
+    LIMIT ?
+  `).all(channelId, ...timeParams, limit) as Message[];
+}
+
+/**
+ * Delete a system note by its DB primary key (no Discord message to delete).
+ * Returns true if a row was deleted.
+ */
+export function deleteSystemNote(id: number): boolean {
+  const db = getDb();
+  const result = db.prepare(`
+    DELETE FROM messages WHERE id = ? AND discord_message_id IS NULL
+      AND json_extract(data, '$.role') = 'system'
+  `).run(id);
   return result.changes > 0;
 }
 
@@ -1003,6 +1083,114 @@ export function deleteWebhookMessageRecord(messageId: string): void {
   const db = getDb();
   db.prepare(`DELETE FROM webhook_messages WHERE message_id = ?`).run(messageId);
   db.prepare(`DELETE FROM messages WHERE discord_message_id = ?`).run(messageId);
+}
+
+// =============================================================================
+// Unified Channel Message Records (webhook messages + system notes)
+// =============================================================================
+
+/**
+ * Unified record for /purge operations: represents either a webhook message
+ * or a system note (/sendnote entry).
+ */
+export interface RecentChannelMessage {
+  /** DB primary key (messages.id) */
+  dbId: number;
+  /** Discord message ID — null for system notes */
+  messageId: string | null;
+  /** Entity ID — null for system notes */
+  entityId: number | null;
+  /** Entity name — "(system note)" for system notes */
+  entityName: string;
+  content: string;
+  createdAt: string;
+  /** True when this is a system note (discord_message_id IS NULL + data.role = 'system') */
+  isSystemNote: boolean;
+}
+
+/**
+ * Get the N most recent purgeable messages in a channel (webhook messages + system notes),
+ * ordered newest-first.
+ */
+export function getRecentChannelMessages(channelId: string, limit: number): RecentChannelMessage[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT
+      m.id as db_id,
+      m.discord_message_id as message_id,
+      wm.entity_id,
+      wm.entity_name,
+      m.content,
+      m.created_at,
+      CASE WHEN m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system' THEN 1 ELSE 0 END as is_system_note
+    FROM messages m
+    LEFT JOIN webhook_messages wm ON wm.message_id = m.discord_message_id
+    WHERE m.channel_id = ? AND (
+      wm.message_id IS NOT NULL
+      OR (m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system')
+    )
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT ?
+  `).all(channelId, limit) as Array<{
+    db_id: number;
+    message_id: string | null;
+    entity_id: number | null;
+    entity_name: string | null;
+    content: string;
+    created_at: string;
+    is_system_note: number;
+  }>;
+  return rows.map(r => ({
+    dbId: r.db_id,
+    messageId: r.message_id,
+    entityId: r.entity_id,
+    entityName: r.entity_name ?? "(system note)",
+    content: r.content,
+    createdAt: r.created_at,
+    isSystemNote: r.is_system_note === 1,
+  }));
+}
+
+/**
+ * Search purgeable messages in a channel by substring match (webhook messages + system notes).
+ */
+export function searchChannelMessages(channelId: string, query: string, limit = 50): RecentChannelMessage[] {
+  const db = getDb();
+  const rows = db.prepare(`
+    SELECT
+      m.id as db_id,
+      m.discord_message_id as message_id,
+      wm.entity_id,
+      wm.entity_name,
+      m.content,
+      m.created_at,
+      CASE WHEN m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system' THEN 1 ELSE 0 END as is_system_note
+    FROM messages m
+    LEFT JOIN webhook_messages wm ON wm.message_id = m.discord_message_id
+    WHERE m.channel_id = ? AND m.content LIKE ? ESCAPE '\\' AND (
+      wm.message_id IS NOT NULL
+      OR (m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system')
+    )
+    ORDER BY m.created_at DESC, m.id DESC
+    LIMIT ?
+  `).all(channelId, `%${query.replace(/[%_\\]/g, "\\$&")}%`, limit) as Array<{
+    db_id: number;
+    message_id: string | null;
+    entity_id: number | null;
+    entity_name: string | null;
+    content: string;
+    created_at: string;
+    is_system_note: number;
+  }>;
+  return rows.map(r => ({
+    dbId: r.db_id,
+    messageId: r.message_id,
+    entityId: r.entity_id,
+    entityName: r.entity_name ?? "(system note)",
+    content: r.content,
+    createdAt: r.created_at,
+    isSystemNote: r.is_system_note === 1,
+  }));
 }
 
 // =============================================================================

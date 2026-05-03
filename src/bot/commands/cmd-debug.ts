@@ -16,6 +16,8 @@ import {
   resolveDiscordEntity,
   resolveDiscordEntities,
   countUnreadMessages,
+  getSystemNoteCount,
+  getRecentSystemNotes,
 } from "../../db/discord";
 import { createBaseContext } from "../../logic/expr";
 import { buildEvaluatedEntity } from "../../debug/evaluation";
@@ -168,6 +170,21 @@ async function handleInfoStatus(ctx: CommandContext) {
     }
   } else {
     lines.push(`**Your persona:** ${ctx.username} (default)`);
+  }
+
+  // Show system note count
+  const noteCount = getSystemNoteCount(ctx.channelId);
+  if (noteCount > 0) {
+    const recentNotes = getRecentSystemNotes(ctx.channelId, 3);
+    const noteLine = `**System notes:** ${noteCount} in context`;
+    lines.push(noteLine);
+    for (const note of recentNotes) {
+      const preview = note.content.length > 60 ? note.content.slice(0, 60) + "…" : note.content;
+      lines.push(`  • ${preview}`);
+    }
+    if (noteCount > 3) {
+      lines.push(`  _(${noteCount - 3} more)_`);
+    }
   }
 
   // Show hints

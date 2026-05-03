@@ -50,6 +50,12 @@ import {
   isNewUser,
   markUserWelcomed,
   setChannelForgetTime,
+  addSystemNote,
+  getSystemNoteCount,
+  getRecentSystemNotes,
+  deleteSystemNote,
+  getRecentChannelMessages,
+  searchChannelMessages,
   type MessageData,
   type EmbedData,
   type AttachmentData,
@@ -494,7 +500,7 @@ describe("resolveDiscordConfig", () => {
 
   test("returns defaults when no config exists", () => {
     const result = resolveDiscordConfig("chan-1", "guild-1");
-    expect(result).toEqual({ bind: null, persona: null, blacklist: null, chainLimit: null, rateChannel: null, rateOwner: null });
+    expect(result).toEqual({ bind: null, persona: null, blacklist: null, chainLimit: null, rateChannel: null, rateOwner: null, sendnote: null });
   });
 
   test("uses channel config when available", () => {
@@ -532,7 +538,7 @@ describe("resolveDiscordConfig", () => {
 
   test("returns defaults when both channelId and guildId are undefined", () => {
     const result = resolveDiscordConfig(undefined, undefined);
-    expect(result).toEqual({ bind: null, persona: null, blacklist: null, chainLimit: null, rateChannel: null, rateOwner: null });
+    expect(result).toEqual({ bind: null, persona: null, blacklist: null, chainLimit: null, rateChannel: null, rateOwner: null, sendnote: null });
   });
 
   test("parses @everyone string from config", () => {
@@ -1144,5 +1150,214 @@ describe("resolveChainLimit", () => {
     setDiscordConfig("guild-1", "guild", { config_chain_limit: 7 });
     setDiscordConfig("chan-1", "channel", { config_chain_limit: 2 });
     expect(resolveChainLimit("chan-1", "guild-1")).toBe(2);
+  });
+});
+
+// =============================================================================
+// System Notes (/sendnote)
+// =============================================================================
+
+describe("addSystemNote / getSystemNoteCount / getRecentSystemNotes", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+  });
+
+  test("addSystemNote inserts a message with null discord_message_id and role=system", () => {
+    const note = addSystemNote("chan-1", "user-1", "Admin", "Hello AI");
+    expect(note.channel_id).toBe("chan-1");
+    expect(note.author_id).toBe("user-1");
+    expect(note.author_name).toBe("Admin");
+    expect(note.content).toBe("Hello AI");
+    expect(note.discord_message_id).toBeNull();
+    const data = parseMessageData(note.data);
+    expect(data?.role).toBe("system");
+  });
+
+  test("getSystemNoteCount counts only system notes, not regular messages", () => {
+    addMessage("chan-1", "user-1", "User", "Hello", "discord-msg-1");
+    addSystemNote("chan-1", "user-2", "Admin", "Note 1");
+    addSystemNote("chan-1", "user-2", "Admin", "Note 2");
+    expect(getSystemNoteCount("chan-1")).toBe(2);
+  });
+
+  test("getSystemNoteCount returns 0 when no notes", () => {
+    addMessage("chan-1", "user-1", "User", "msg", "discord-msg-1");
+    expect(getSystemNoteCount("chan-1")).toBe(0);
+  });
+
+  test("getSystemNoteCount respects forget time (excludes notes before forget_at)", () => {
+    // Add a note, then set the forget time to "now" — the note has created_at <= forget_at
+    // so it should be excluded. This mirrors how setChannelForgetTime excludes old messages.
+    addSystemNote("chan-1", "user-1", "Admin", "Old note");
+    // Directly insert a future forget_at to ensure the note's timestamp is before it
+    testDb.prepare(`
+      INSERT INTO channel_forgets (channel_id, forget_at)
+      VALUES ('chan-1', datetime('now', '+1 second'))
+      ON CONFLICT(channel_id) DO UPDATE SET forget_at = datetime('now', '+1 second')
+    `).run();
+    expect(getSystemNoteCount("chan-1")).toBe(0);
+  });
+
+  test("getRecentSystemNotes returns notes newest-first", () => {
+    addSystemNote("chan-1", "user-1", "Admin", "First");
+    addSystemNote("chan-1", "user-1", "Admin", "Second");
+    addSystemNote("chan-1", "user-1", "Admin", "Third");
+    const notes = getRecentSystemNotes("chan-1", 5);
+    expect(notes.length).toBe(3);
+    expect(notes[0].content).toBe("Third");
+    expect(notes[1].content).toBe("Second");
+    expect(notes[2].content).toBe("First");
+  });
+
+  test("getRecentSystemNotes limits results", () => {
+    addSystemNote("chan-1", "user-1", "Admin", "Note 1");
+    addSystemNote("chan-1", "user-1", "Admin", "Note 2");
+    addSystemNote("chan-1", "user-1", "Admin", "Note 3");
+    const notes = getRecentSystemNotes("chan-1", 2);
+    expect(notes.length).toBe(2);
+  });
+
+  test("getRecentSystemNotes does not return regular messages", () => {
+    addMessage("chan-1", "user-1", "User", "Regular msg", "discord-msg-1");
+    addSystemNote("chan-1", "user-2", "Admin", "System note");
+    const notes = getRecentSystemNotes("chan-1", 10);
+    expect(notes.length).toBe(1);
+    expect(notes[0].content).toBe("System note");
+  });
+});
+
+describe("deleteSystemNote", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+  });
+
+  test("deletes a system note by DB id", () => {
+    const note = addSystemNote("chan-1", "user-1", "Admin", "Delete me");
+    expect(getSystemNoteCount("chan-1")).toBe(1);
+    const deleted = deleteSystemNote(note.id);
+    expect(deleted).toBe(true);
+    expect(getSystemNoteCount("chan-1")).toBe(0);
+  });
+
+  test("returns false when note does not exist", () => {
+    expect(deleteSystemNote(9999)).toBe(false);
+  });
+
+  test("does not delete regular messages", () => {
+    const msg = addMessage("chan-1", "user-1", "User", "Regular", "discord-msg-1");
+    if (!msg) throw new Error("addMessage returned undefined");
+    expect(deleteSystemNote(msg.id)).toBe(false);
+  });
+});
+
+describe("getRecentChannelMessages / searchChannelMessages", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+  });
+
+  test("returns webhook messages and system notes, not plain user messages", () => {
+    // Plain user message — should NOT appear
+    addMessage("chan-1", "user-1", "User", "Plain message", "discord-msg-1");
+    // System note — should appear
+    addSystemNote("chan-1", "admin", "Admin", "System note");
+    // Webhook message (tracked) — should appear
+    addMessage("chan-1", "bot-1", "BotA", "Bot reply", "discord-msg-2");
+    testDb.prepare(`INSERT OR REPLACE INTO entities (id, name) VALUES (1, 'BotA')`).run();
+    trackWebhookMessage("discord-msg-2", 1, "BotA");
+
+    const recent = getRecentChannelMessages("chan-1", 10);
+    expect(recent.length).toBe(2);
+    const types = recent.map(r => r.isSystemNote);
+    expect(types).toContain(true);
+    expect(types).toContain(false);
+  });
+
+  test("system note has isSystemNote=true and null messageId", () => {
+    const note = addSystemNote("chan-1", "admin", "Admin", "Context injection");
+    const recent = getRecentChannelMessages("chan-1", 10);
+    expect(recent.length).toBe(1);
+    expect(recent[0].isSystemNote).toBe(true);
+    expect(recent[0].messageId).toBeNull();
+    expect(recent[0].dbId).toBe(note.id);
+    expect(recent[0].entityName).toBe("(system note)");
+  });
+
+  test("webhook message has isSystemNote=false and a messageId", () => {
+    addMessage("chan-1", "bot-1", "BotA", "Response", "discord-msg-1");
+    testDb.prepare(`INSERT OR REPLACE INTO entities (id, name) VALUES (1, 'BotA')`).run();
+    trackWebhookMessage("discord-msg-1", 1, "BotA");
+
+    const recent = getRecentChannelMessages("chan-1", 10);
+    expect(recent.length).toBe(1);
+    expect(recent[0].isSystemNote).toBe(false);
+    expect(recent[0].messageId).toBe("discord-msg-1");
+    expect(recent[0].entityId).toBe(1);
+  });
+
+  test("searchChannelMessages matches system notes by content", () => {
+    addSystemNote("chan-1", "admin", "Admin", "Inject weather context");
+    addSystemNote("chan-1", "admin", "Admin", "Inject time context");
+
+    const results = searchChannelMessages("chan-1", "weather");
+    expect(results.length).toBe(1);
+    expect(results[0].content).toBe("Inject weather context");
+  });
+
+  test("searchChannelMessages matches webhook messages by content", () => {
+    addMessage("chan-1", "bot-1", "BotA", "Hello world response", "discord-msg-1");
+    testDb.prepare(`INSERT OR REPLACE INTO entities (id, name) VALUES (1, 'BotA')`).run();
+    trackWebhookMessage("discord-msg-1", 1, "BotA");
+
+    const results = searchChannelMessages("chan-1", "Hello world");
+    expect(results.length).toBe(1);
+    expect(results[0].content).toBe("Hello world response");
+    expect(results[0].isSystemNote).toBe(false);
+  });
+
+  test("respects channel isolation", () => {
+    addSystemNote("chan-1", "admin", "Admin", "Note for chan-1");
+    addSystemNote("chan-2", "admin", "Admin", "Note for chan-2");
+
+    expect(getRecentChannelMessages("chan-1", 10).length).toBe(1);
+    expect(getRecentChannelMessages("chan-2", 10).length).toBe(1);
+    expect(getRecentChannelMessages("chan-1", 10)[0].content).toBe("Note for chan-1");
+  });
+});
+
+describe("resolveDiscordConfig sendnote field", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+  });
+
+  test("returns null sendnote by default", () => {
+    const result = resolveDiscordConfig("chan-1", "guild-1");
+    expect(result.sendnote).toBeNull();
+  });
+
+  test("returns sendnote allowlist when configured at channel level", () => {
+    setDiscordConfig("chan-1", "channel", {
+      config_sendnote: JSON.stringify(["user-mod"]),
+    });
+    const result = resolveDiscordConfig("chan-1", "guild-1");
+    expect(result.sendnote).toEqual(["user-mod"]);
+  });
+
+  test("falls back to guild sendnote when channel sendnote is null", () => {
+    setDiscordConfig("guild-1", "guild", {
+      config_sendnote: JSON.stringify(["role:mods"]),
+    });
+    const result = resolveDiscordConfig("chan-1", "guild-1");
+    expect(result.sendnote).toEqual(["role:mods"]);
+  });
+
+  test("channel sendnote takes priority over guild sendnote", () => {
+    setDiscordConfig("guild-1", "guild", {
+      config_sendnote: JSON.stringify(["guild-user"]),
+    });
+    setDiscordConfig("chan-1", "channel", {
+      config_sendnote: JSON.stringify(["channel-user"]),
+    });
+    const result = resolveDiscordConfig("chan-1", "guild-1");
+    expect(result.sendnote).toEqual(["channel-user"]);
   });
 });

@@ -39,6 +39,11 @@ Not everyone needs to respond to every message. Only respond as those who would 
   {{- "\n" -}}
   {% for msg in history %}
     {{- "\n" if not loop.first -}}
+    {% if msg.data_role %}
+    {% call send_as(msg.data_role) -%}
+      {{ msg.content }}
+    {%- endcall %}
+    {% else %}
     {% set is_assistant = true if responders[msg.entity_id] else false %}
     {% call send_as("assistant" if is_assistant else "user") -%}
       {{ msg.author }}: {{ parse_emojis(msg.content) }}
@@ -66,5 +71,6 @@ Not everyone needs to respond to every message. Only respond as those who would 
       [sticker: {{ sticker.name }}]{% if sticker_url(sticker) %}{{ attach(sticker_url(sticker), sticker_media_type(sticker)) }}{% endif %}
       {%- endfor %}
     {%- endcall %}
+    {% endif %}
   {% endfor %}
 {% endblock history %}
