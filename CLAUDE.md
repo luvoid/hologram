@@ -116,6 +116,8 @@ editors/
 
 ## Architecture
 
+For the reasoning behind architectural choices, see `docs/design/decisions.md`.
+
 ### Core Model
 
 Everything is an **entity** with **facts**. No distinction between character/location/item - all entities.
@@ -164,25 +166,19 @@ Response
 
 ### Variable Unification
 
-Variables are shared between `$if` expressions and templates. The unification is one-directional: templates receive everything from `ExprContext` plus template-specific additions.
-
-- **Base context** is defined in `createBaseContext()` in `src/logic/expr.ts`. Adding a variable there makes it available to both `$if` expressions and Nunjucks templates automatically.
-- **Template-only context** (entities, others, memories, history, char, user, etc.) is added in `src/ai/template.ts` during rendering. These are only available in templates, not `$if` expressions.
-- **Fact macros** (`{{entity:ID}}`, `{{char}}`, `{{random:A,B,C}}`, etc.) are expanded in `src/ai/prompt.ts` via string replacement before evaluation — they're a separate mechanism from expression variables.
+- `createBaseContext()` (`src/logic/expr.ts`) — available to both `$if` and templates. Add here for both.
+- Template-only (entities, others, memories, history, char, user) — added in `src/ai/template.ts`, not in `$if`.
+- Fact macros (`{{entity:ID}}`, `{{char}}`, etc.) — string replacement in `src/ai/prompt.ts`, separate from expression variables.
 
 ### Custom Templates
 
 Nunjucks templates override the default system prompt formatting per entity. Implementation in `src/ai/template.ts`.
 
-**Two-layer system prompt:** The LLM receives two distinct system instruction channels:
-1. **Dedicated system parameter** — rendered from per-entity system template (or empty default), passed as the AI SDK `system` field.
-2. **System-role messages** — system-role entries in the messages array from the main template. Carry entity definitions, memories, and response instructions.
+**Two-layer system prompt:** `system` API parameter (per-entity system template) + system-role messages array (entity definitions, memories, instructions from main template). See `docs/design/decisions.md`.
 
-**Default template uses XML tags** (`<defs for="name" id="N">`, `<memories for="name" id="N">`, `<embed>`, `<component>`) rather than markdown headers. This is intentional — entity facts and Discord messages contain markdown, which would blend visually with structural markdown headers. XML is unambiguous as structure.
+**`send_as` macro:** `{% call send_as(role) %}...{% endcall %}` designates message roles. Auto-injected at render time. Unmarked text → system-role. No calls → entire output is one system message.
 
-**`send_as` macro:** Templates use `{% call send_as(role) %}...{% endcall %}` to designate message roles. The macro is automatically injected at render time. Unmarked text becomes system-role messages. No `send_as` calls = entire output is a single system message.
-
-**Template inheritance:** `{% extends "entity-name" %}` loads another entity's template as parent. Child templates inherit the `send_as` macro from their root parent. Nunjucks has built-in circular inheritance detection.
+**Template inheritance:** `{% extends "entity-name" %}` — child inherits `send_as` macro from root parent. Circular detection is built in.
 
 **Key behaviors:**
 - `null` template (default) = use built-in `DEFAULT_TEMPLATE`
@@ -335,8 +331,7 @@ Do not:
 - Use `--no-verify` - fix the issue or fix the hook
 - Assume tools are missing - check if `bun` is available
 - Use `as any` type assertions or `type Foo = any` aliases - they hide type errors and indicate missing/wrong types. Fix the underlying type issue instead (add proper desiredProperties, use correct property paths like `toggles.nsfw` instead of `nsfw`, etc.). For Discordeno types, use `typeof bot` from `src/bot/client.ts` to get the fully-resolved `Bot<TProps, TBehavior>` without manually threading generics.
-- **Never downgrade fidelity.** When storing or rendering Discord data (embeds, components, attachments, etc.), preserve the full structure. Never flatten rich data to "just text" — store the complete data and render it properly in templates.
-- **`embed.toJSON()` in the default template is intentional.** The JSON dump is the correct behavior. Do not replace it with a text summary, regardless of speculation about "echo cascades" or verbosity.
+- **Never downgrade fidelity.** When storing or rendering Discord data (embeds, components, attachments, etc.), preserve the full structure. Never flatten rich data to "just text" — store the complete data and render it properly in templates. (`embed.toJSON()` in the default template is intentional — see `docs/design/decisions.md`.)
 - **`sqlite-vec` returns `Uint8Array`, not `Float32Array`.** Always convert: `new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4)`. Affects `fact_embeddings` and `memory_embeddings`.
 - **`Object.create(null)` breaks Nunjucks.** Use `{}` instead.
 - **Config columns need safe JSON fallbacks.** All `JSON.parse` calls on DB config columns (permissions, delimiters, strip patterns) must use `safeParseFallback()` (`src/db/entities.ts`) or `safeJsonParse()` (`src/bot/client.ts`). Corrupted data otherwise crashes the command handler.
