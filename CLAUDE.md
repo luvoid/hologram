@@ -178,6 +178,8 @@ Nunjucks templates override the default system prompt formatting per entity. Imp
 1. **Dedicated system parameter** — rendered from per-entity system template (or empty default), passed as the AI SDK `system` field.
 2. **System-role messages** — system-role entries in the messages array from the main template. Carry entity definitions, memories, and response instructions.
 
+**Default template uses XML tags** (`<defs for="name" id="N">`, `<memories for="name" id="N">`, `<embed>`, `<component>`) rather than markdown headers. This is intentional — entity facts and Discord messages contain markdown, which would blend visually with structural markdown headers. XML is unambiguous as structure.
+
 **`send_as` macro:** Templates use `{% call send_as(role) %}...{% endcall %}` to designate message roles. The macro is automatically injected at render time. Unmarked text becomes system-role messages. No `send_as` calls = entire output is a single system message.
 
 **Template inheritance:** `{% extends "entity-name" %}` loads another entity's template as parent. Child templates inherit the `send_as` macro from their root parent. Nunjucks has built-in circular inheritance detection.
@@ -334,6 +336,12 @@ Do not:
 - Assume tools are missing - check if `bun` is available
 - Use `as any` type assertions or `type Foo = any` aliases - they hide type errors and indicate missing/wrong types. Fix the underlying type issue instead (add proper desiredProperties, use correct property paths like `toggles.nsfw` instead of `nsfw`, etc.). For Discordeno types, use `typeof bot` from `src/bot/client.ts` to get the fully-resolved `Bot<TProps, TBehavior>` without manually threading generics.
 - **Never downgrade fidelity.** When storing or rendering Discord data (embeds, components, attachments, etc.), preserve the full structure. Never flatten rich data to "just text" — store the complete data and render it properly in templates.
+- **`embed.toJSON()` in the default template is intentional.** The JSON dump is the correct behavior. Do not replace it with a text summary, regardless of speculation about "echo cascades" or verbosity.
+- **`sqlite-vec` returns `Uint8Array`, not `Float32Array`.** Always convert: `new Float32Array(blob.buffer, blob.byteOffset, blob.byteLength / 4)`. Affects `fact_embeddings` and `memory_embeddings`.
+- **`Object.create(null)` breaks Nunjucks.** Use `{}` instead.
+- **Config columns need safe JSON fallbacks.** All `JSON.parse` calls on DB config columns (permissions, delimiters, strip patterns) must use `safeParseFallback()` (`src/db/entities.ts`) or `safeJsonParse()` (`src/bot/client.ts`). Corrupted data otherwise crashes the command handler.
+- **Non-responding entities need `processRawFacts()`.** Entities in the `others` and user persona slots receive raw DB facts — they must go through `processRawFacts()` from `src/ai/prompt.ts` to strip `$if` prefixes and directives before being passed to templates.
+- **`buildEvaluatedEntity` mock context** (`src/debug/evaluation.ts`) omits real runtime values like `unread_count`. When adding new `ExprContext` fields, also update the mock there.
 
 ## Context Management
 
@@ -354,6 +362,6 @@ This is non-negotiable. When work is done, commit it immediately. Not committing
 
 Use conventional commits: `type(scope): message`
 
-Types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test`
+Types: `feat`, `fix`, `refactor`, `docs`, `chore`, `test` (no `perf` — the hook will reject it)
 
 Before committing: `bun run lint && bun run check:types` must pass. The pre-commit hook also runs `normalize rules run` — fix any `error`-severity issues it reports (e.g. `hardcoded-secret`). Warnings (e.g. `missing-summary`, `stale-summary`) won't block the commit but should be addressed.
