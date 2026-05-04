@@ -1162,7 +1162,7 @@ describe("addSystemNote / getSystemNoteCount / getRecentSystemNotes", () => {
     testDb = createTestDb();
   });
 
-  test("addSystemNote inserts a message with null discord_message_id and role=system", () => {
+  test("addSystemNote inserts a message with null discord_message_id and is_note=true", () => {
     const note = addSystemNote("chan-1", "user-1", "Admin", "Hello AI");
     expect(note.channel_id).toBe("chan-1");
     expect(note.author_id).toBe("user-1");
@@ -1170,7 +1170,8 @@ describe("addSystemNote / getSystemNoteCount / getRecentSystemNotes", () => {
     expect(note.content).toBe("Hello AI");
     expect(note.discord_message_id).toBeNull();
     const data = parseMessageData(note.data);
-    expect(data?.role).toBe("system");
+    expect(data?.is_note).toBe(true);
+    expect(data?.is_bot).toBe(true);
   });
 
   test("getSystemNoteCount counts only system notes, not regular messages", () => {

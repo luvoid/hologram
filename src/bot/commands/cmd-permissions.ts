@@ -256,9 +256,9 @@ export function canUserPersonaInLocation(userId: string, username: string, userR
 
 /**
  * Check if a user can add system notes (/sendnote) in a location.
- * Default gate is MANAGE_CHANNELS (checked in command handler via Discord permissions).
+ * Default gate is MANAGE_MESSAGES (checked in command handler via Discord permissions).
  * When a `/config sendnote` allowlist exists for the channel/guild, it replaces the
- * MANAGE_CHANNELS gate — this function only checks the allowlist.
+ * MANAGE_MESSAGES gate — this function only checks the allowlist.
  * Returns null when no allowlist is configured (caller uses the Discord permission gate).
  * Returns true/false when an explicit allowlist is present.
  */

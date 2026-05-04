@@ -671,6 +671,32 @@ async function handleAutocomplete(bot: Bot, interaction: Interaction) {
       if (!isUserAllowed(permissions, userId, username, entity.owned_by, userRoles)) return false;
       return true;
     }).slice(0, 25);
+  } else if (commandName === "sendas") {
+    // /sendas: filter to entities where user has BOTH edit AND use permission.
+    // Also include "@system" as a special suggestion.
+    const allResults = searchEntities(query, 100);
+    const entitiesWithFacts = getEntitiesWithFacts(allResults.map(e => e.id));
+
+    results = allResults.filter(entity => {
+      if (entity.owned_by === userId) return true;
+      const entityWithFacts = entitiesWithFacts.get(entity.id);
+      if (!entityWithFacts) return false;
+      const facts = entityWithFacts.facts.map(f => f.content);
+      const permissions = parsePermissionDirectives(facts, getPermissionDefaults(entity.id));
+      if (isUserBlacklisted(permissions, userId, username, entity.owned_by, userRoles)) return false;
+      // Edit permission required
+      if (permissions.editList !== "@everyone" &&
+          !permissions.editList?.some(u => matchesUserEntry(u, userId, username, userRoles))) return false;
+      // Use permission required
+      if (!isUserAllowed(permissions, userId, username, entity.owned_by, userRoles)) return false;
+      return true;
+    }).slice(0, 24); // reserve one slot for @system
+
+    // Prepend @system if query matches
+    if ("@system".startsWith(query.toLowerCase()) || query === "") {
+      const systemChoice = { id: -1, name: "@system", owned_by: null };
+      results = [systemChoice as typeof results[number], ...results].slice(0, 25);
+    }
   } else {
     // Fallback - show all
     results = searchEntities(query, 25);

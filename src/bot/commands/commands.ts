@@ -37,10 +37,13 @@ import {
   getFilteredMessages,
   resolvePersona,
   addSystemNote,
+  addMessage,
+  trackWebhookMessage,
 } from "../../db/discord";
 import { parsePermissionDirectives, isUserBlacklisted, isUserAllowed, evaluateFacts, createBaseContext } from "../../logic/expr";
 import { formatEntityDisplay } from "../../ai/context";
 import { sendResponse } from "../client";
+import { executeWebhook } from "../webhooks";
 import { debug } from "../../logger";
 import { elideText, buildDefaultValues, buildEntries, chunkContent, type ResolvedData } from "./helpers";
 export { chunkContent, elideText, buildDefaultValues, buildEntries, type ResolvedData };
@@ -647,7 +650,7 @@ const CONFIG_DESCRIPTIONS: Record<ConfigField, string> = {
   bind: "Who can bind entities here. Blank = everyone.",
   persona: "Who can use personas here. Blank = everyone.",
   blacklist: "Blocked from all binding operations.",
-  sendnote: "Who can add system notes (/sendnote). Blank = Manage Channels required.",
+  sendnote: "Who can add system notes (/sendnote). Blank = Manage Messages required.",
 };
 
 function buildConfigLabels(discordId: string, discordType: "channel" | "guild"): unknown[] {
@@ -1036,27 +1039,27 @@ registerCommand({
     }
 
     if (!ctx.guildId) {
-      // DMs: require Manage Channels fallback — DMs have no server config, so we
-      // use the MANAGE_CHANNELS gate unconditionally.
+      // DMs: require Manage Messages fallback — DMs have no server config, so we
+      // use the MANAGE_MESSAGES gate unconditionally.
       const memberPerms = ctx.interaction.member?.permissions;
-      const hasManageChannels = memberPerms != null && typeof memberPerms === "object" && (
-        memberPerms.has("MANAGE_CHANNELS") || memberPerms.has("ADMINISTRATOR")
+      const hasManageMessages = memberPerms != null && typeof memberPerms === "object" && (
+        memberPerms.has("MANAGE_MESSAGES") || memberPerms.has("ADMINISTRATOR")
       );
-      if (!hasManageChannels) {
-        await respond(ctx.bot, ctx.interaction, "Adding notes requires **Manage Channels** permission. Admins can delegate via `/config sendnote`.", true);
+      if (!hasManageMessages) {
+        await respond(ctx.bot, ctx.interaction, "Adding notes requires **Manage Messages** permission. Admins can delegate via `/config sendnote`.", true);
         return;
       }
     } else {
-      // Check sendnote allowlist; fall back to MANAGE_CHANNELS if not configured
+      // Check sendnote allowlist; fall back to MANAGE_MESSAGES if not configured
       const allowlistResult = canUserSendNoteInLocation(ctx.userId, ctx.username, ctx.userRoles, ctx.channelId, ctx.guildId);
       if (allowlistResult === null) {
         // No explicit allowlist — check Discord permission gate
         const memberPerms = ctx.interaction.member?.permissions;
-        const hasManageChannels = memberPerms != null && typeof memberPerms === "object" && (
-          memberPerms.has("MANAGE_CHANNELS") || memberPerms.has("ADMINISTRATOR")
+        const hasManageMessages = memberPerms != null && typeof memberPerms === "object" && (
+          memberPerms.has("MANAGE_MESSAGES") || memberPerms.has("ADMINISTRATOR")
         );
-        if (!hasManageChannels) {
-          await respond(ctx.bot, ctx.interaction, "Adding notes requires **Manage Channels** permission. Admins can delegate via `/config sendnote`.", true);
+        if (!hasManageMessages) {
+          await respond(ctx.bot, ctx.interaction, "Adding notes requires **Manage Messages** permission. Admins can delegate via `/config sendnote`.", true);
           return;
         }
       } else if (!allowlistResult) {
@@ -1065,7 +1068,7 @@ registerCommand({
       }
     }
 
-    addSystemNote(ctx.channelId, ctx.userId, ctx.username, content.trim());
+    addSystemNote(ctx.channelId, ctx.userId, "note", content.trim());
 
     debug("System note added", { channel: ctx.channelId, user: ctx.username });
 
@@ -1084,5 +1087,142 @@ registerCommand({
   async handler(ctx, _options) {
     setChannelForgetTime(ctx.channelId);
     await respond(ctx.bot, ctx.interaction, "Done. Messages before now will be excluded from context.", true);
+  },
+});
+
+// =============================================================================
+// /sendas - Send a message as an entity or as @system via webhook
+// =============================================================================
+
+registerCommand({
+  name: "sendas",
+  description: "Send a message as an entity or as @system",
+  defaultMemberPermissions: "8192", // MANAGE_MESSAGES — baseline gate; @system path requires MANAGE_WEBHOOKS
+  options: [
+    {
+      name: "entity",
+      description: "Entity name, or @system to send a visible system message",
+      type: ApplicationCommandOptionTypes.String,
+      required: true,
+      autocomplete: true,
+    },
+    {
+      name: "content",
+      description: "Message content to send",
+      type: ApplicationCommandOptionTypes.String,
+      required: true,
+    },
+  ],
+  async handler(ctx, options) {
+    const entityInput = options.entity as string;
+    const content = (options.content as string).trim();
+
+    if (!content) {
+      await respond(ctx.bot, ctx.interaction, "Message content cannot be empty", true);
+      return;
+    }
+
+    // ── @system path ──────────────────────────────────────────────────────────
+    if (entityInput === "@system") {
+      // Requires MANAGE_WEBHOOKS to post a visible webhook message
+      const memberPerms = ctx.interaction.member?.permissions;
+      const hasManageWebhooks = memberPerms != null && typeof memberPerms === "object" && (
+        memberPerms.has("MANAGE_WEBHOOKS") || memberPerms.has("ADMINISTRATOR")
+      );
+      if (!hasManageWebhooks) {
+        await respond(ctx.bot, ctx.interaction, "Sending as **System** requires **Manage Webhooks** permission.", true);
+        return;
+      }
+
+      const msgIds = await executeWebhook(ctx.channelId, content, "System");
+      if (msgIds && msgIds.length > 0) {
+        addMessage(ctx.channelId, ctx.userId, "system", content, msgIds[0], { is_system: true, is_bot: true });
+      }
+
+      debug("/sendas @system", { channel: ctx.channelId, user: ctx.username });
+      await respond(ctx.bot, ctx.interaction, "Sent as **System**", true);
+      return;
+    }
+
+    // ── Entity path ───────────────────────────────────────────────────────────
+    let entity: EntityWithFacts | null = null;
+    const id = parseInt(entityInput);
+    if (!isNaN(id)) {
+      entity = getEntityWithFacts(id);
+    }
+    if (!entity) {
+      entity = getEntityWithFactsByName(entityInput);
+    }
+
+    if (!entity) {
+      await respond(ctx.bot, ctx.interaction, `Entity not found: ${entityInput}`, true);
+      return;
+    }
+
+    const facts = entity.facts.map(f => f.content);
+    const permissions = parsePermissionDirectives(facts, getPermissionDefaults(entity.id));
+
+    // Require both edit AND use permissions
+    if (isUserBlacklisted(permissions, ctx.userId, ctx.username, entity.owned_by, ctx.userRoles)) {
+      await respond(ctx.bot, ctx.interaction, "You don't have permission to send as this entity", true);
+      return;
+    }
+
+    if (!canUserEdit(entity, ctx.userId, ctx.username, ctx.userRoles)) {
+      await respond(ctx.bot, ctx.interaction, "You don't have permission to send as this entity (edit required)", true);
+      return;
+    }
+
+    if (!isUserAllowed(permissions, ctx.userId, ctx.username, entity.owned_by, ctx.userRoles)) {
+      await respond(ctx.bot, ctx.interaction, "You don't have permission to send as this entity (use required)", true);
+      return;
+    }
+
+    // Evaluate facts to get avatar
+    const ctx2 = createBaseContext({
+      facts,
+      has_fact: (pattern: string) => {
+        const regex = new RegExp(pattern, "i");
+        return facts.some(f => regex.test(f));
+      },
+      messages: (n = 1, format?: string, filter?: string) =>
+        filter
+          ? formatMessagesForContext(getFilteredMessages(ctx.channelId, n, filter), format)
+          : formatMessagesForContext(getMessages(ctx.channelId, n), format),
+      response_ms: 0,
+      retry_ms: 0,
+      idle_ms: 0,
+      unread_count: 0,
+      mentioned: false,
+      replied: false,
+      replied_to: "",
+      is_forward: false,
+      is_self: false,
+      is_hologram: false,
+      silent: false,
+      interaction_type: "",
+      name: entity.name,
+      chars: [entity.name],
+      channel: { id: ctx.channelId, name: "", description: "", is_nsfw: false, type: "text", mention: "" },
+      server: { id: ctx.guildId ?? "", name: "", description: "", nsfw_level: "default" },
+    });
+
+    let result;
+    try {
+      result = evaluateFacts(facts, ctx2, getEntityEvalDefaults(entity.id));
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      await respond(ctx.bot, ctx.interaction, `Fact evaluation error: ${errorMsg}`, true);
+      return;
+    }
+
+    const msgIds = await executeWebhook(ctx.channelId, content, entity.name, result.avatarUrl ?? undefined);
+    if (msgIds && msgIds.length > 0) {
+      addMessage(ctx.channelId, ctx.userId, entity.name, content, msgIds[0], { is_bot: true });
+      trackWebhookMessage(msgIds[0], entity.id, entity.name);
+    }
+
+    debug("/sendas entity", { entity: entity.name, channel: ctx.channelId, user: ctx.username });
+    await respond(ctx.bot, ctx.interaction, `Sent as **${entity.name}**`, true);
   },
 });

@@ -565,12 +565,12 @@ export interface DiscordComponentData {
 export interface MessageData {
   is_bot?: boolean;
   is_forward?: boolean;
+  is_note?: boolean;
+  is_system?: boolean;
   embeds?: EmbedData[];
   stickers?: StickerData[];
   attachments?: AttachmentData[];
   components?: DiscordComponentData[];
-  /** Used by system notes (/sendnote) — marks this message as a system-role context entry */
-  role?: string;
 }
 
 export function parseMessageData(raw: string | null): MessageData | null {
@@ -671,9 +671,10 @@ export function deleteMessageById(id: number): boolean {
 }
 
 /**
- * Insert an invisible system-role note into a channel's message history.
- * Notes have `discord_message_id = null` and `data = { "role": "system" }`.
- * They appear in the AI context but are never posted to Discord.
+ * Insert an invisible note into a channel's message history.
+ * Notes have `discord_message_id = null` and `data = { is_note: true, is_bot: true }`.
+ * They appear in the AI context (as system-role messages) but are never posted to Discord.
+ * The caller should pass `"note"` as authorName so templates can prefix with "note:".
  */
 export function addSystemNote(
   channelId: string,
@@ -682,7 +683,7 @@ export function addSystemNote(
   content: string,
 ): Message {
   const db = getDb();
-  const data: MessageData = { role: "system" };
+  const data: MessageData = { is_note: true, is_bot: true };
   return db.prepare(`
     INSERT INTO messages (channel_id, author_id, author_name, content, discord_message_id, data)
     VALUES (?, ?, ?, ?, NULL, ?)
@@ -691,7 +692,7 @@ export function addSystemNote(
 }
 
 /**
- * Count system notes (role="system" messages) visible in a channel's context.
+ * Count system notes (/sendnote messages) visible in a channel's context.
  * Respects the forget time if set.
  */
 export function getSystemNoteCount(channelId: string): number {
@@ -704,7 +705,7 @@ export function getSystemNoteCount(channelId: string): number {
   const row = db.prepare(`
     SELECT COUNT(*) as count FROM messages
     WHERE channel_id = ? AND discord_message_id IS NULL
-      AND json_extract(data, '$.role') = 'system'${timeClause}
+      AND json_extract(data, '$.is_note') = 1${timeClause}
   `).get(channelId, ...timeParams) as { count: number };
   return row.count;
 }
@@ -722,7 +723,7 @@ export function getRecentSystemNotes(channelId: string, limit = 5): Message[] {
   return db.prepare(`
     SELECT * FROM messages
     WHERE channel_id = ? AND discord_message_id IS NULL
-      AND json_extract(data, '$.role') = 'system'${timeClause}
+      AND json_extract(data, '$.is_note') = 1${timeClause}
     ORDER BY created_at DESC, id DESC
     LIMIT ?
   `).all(channelId, ...timeParams, limit) as Message[];
@@ -736,7 +737,7 @@ export function deleteSystemNote(id: number): boolean {
   const db = getDb();
   const result = db.prepare(`
     DELETE FROM messages WHERE id = ? AND discord_message_id IS NULL
-      AND json_extract(data, '$.role') = 'system'
+      AND json_extract(data, '$.is_note') = 1
   `).run(id);
   return result.changes > 0;
 }
@@ -1104,7 +1105,7 @@ export interface RecentChannelMessage {
   entityName: string;
   content: string;
   createdAt: string;
-  /** True when this is a system note (discord_message_id IS NULL + data.role = 'system') */
+  /** True when this is a system note (discord_message_id IS NULL + data.is_note = true) */
   isSystemNote: boolean;
 }
 
@@ -1122,12 +1123,12 @@ export function getRecentChannelMessages(channelId: string, limit: number): Rece
       wm.entity_name,
       m.content,
       m.created_at,
-      CASE WHEN m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system' THEN 1 ELSE 0 END as is_system_note
+      CASE WHEN m.discord_message_id IS NULL AND json_extract(m.data, '$.is_note') = 1 THEN 1 ELSE 0 END as is_system_note
     FROM messages m
     LEFT JOIN webhook_messages wm ON wm.message_id = m.discord_message_id
     WHERE m.channel_id = ? AND (
       wm.message_id IS NOT NULL
-      OR (m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system')
+      OR (m.discord_message_id IS NULL AND json_extract(m.data, '$.is_note') = 1)
     )
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT ?
@@ -1164,12 +1165,12 @@ export function searchChannelMessages(channelId: string, query: string, limit = 
       wm.entity_name,
       m.content,
       m.created_at,
-      CASE WHEN m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system' THEN 1 ELSE 0 END as is_system_note
+      CASE WHEN m.discord_message_id IS NULL AND json_extract(m.data, '$.is_note') = 1 THEN 1 ELSE 0 END as is_system_note
     FROM messages m
     LEFT JOIN webhook_messages wm ON wm.message_id = m.discord_message_id
     WHERE m.channel_id = ? AND m.content LIKE ? ESCAPE '\\' AND (
       wm.message_id IS NOT NULL
-      OR (m.discord_message_id IS NULL AND json_extract(m.data, '$.role') = 'system')
+      OR (m.discord_message_id IS NULL AND json_extract(m.data, '$.is_note') = 1)
     )
     ORDER BY m.created_at DESC, m.id DESC
     LIMIT ?

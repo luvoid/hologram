@@ -87,6 +87,19 @@ function checkCanUse(entityId: number, ownedBy: string | null, facts: string[], 
   return isUserAllowed(permissions, userId, username, ownedBy, userRoles);
 }
 
+/** /sendas requires BOTH edit AND use permission (mirrors the command handler logic). */
+function checkCanSendAs(entityId: number, ownedBy: string | null, facts: string[], userId: string, username: string, userRoles: string[] = []): boolean {
+  if (ownedBy === userId) return true;
+  const permissions = parsePermissionDirectives(facts, getPermissionDefaults(entityId));
+  if (isUserBlacklisted(permissions, userId, username, ownedBy, userRoles)) return false;
+  // Edit permission check (mirrors canUserEdit)
+  if (permissions.editList !== "@everyone" &&
+      !permissions.editList?.some(u => matchesUserEntry(u, userId, username, userRoles))) return false;
+  // Use permission check (mirrors isUserAllowed)
+  if (!isUserAllowed(permissions, userId, username, ownedBy, userRoles)) return false;
+  return true;
+}
+
 function checkCanBind(userId: string, username: string, userRoles: string[], channelId?: string, guildId?: string): boolean {
   const config = resolveDiscordConfig(channelId, guildId);
   if (config.blacklist?.some(entry => matchesUserEntry(entry, userId, username, userRoles))) return false;
@@ -634,5 +647,89 @@ describe("canUserPersonaInLocation (permission logic)", () => {
       config_persona: JSON.stringify([`role:${ROLE_ID_2}`]),
     });
     expect(checkCanPersona(OTHER_ID, "otherName", [ROLE_ID_2], undefined, GUILD_ID)).toBe(true);
+  });
+});
+
+// =============================================================================
+// /sendas permission logic — requires both edit AND use
+// =============================================================================
+
+describe("checkCanSendAs (edit+use required)", () => {
+  beforeEach(() => {
+    testDb = createTestDb();
+  });
+
+  test("owner always can sendas", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OWNER_ID, "ownerName")).toBe(true);
+  });
+
+  test("non-owner blocked when no editList set (owner-only default)", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(false);
+  });
+
+  test("non-owner blocked when editList is @everyone but useList restricts", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify("@everyone"),
+      config_use: JSON.stringify([OWNER_ID]), // OTHER_ID not allowed to use
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(false);
+  });
+
+  test("non-owner blocked when useList permits but editList does not", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify([OWNER_ID]), // OTHER_ID not in edit list
+      config_use: JSON.stringify("@everyone"),
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(false);
+  });
+
+  test("non-owner allowed when both editList and useList grant access", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify([OTHER_ID]),
+      config_use: JSON.stringify([OTHER_ID]),
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(true);
+  });
+
+  test("non-owner allowed when both lists are @everyone", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify("@everyone"),
+      config_use: JSON.stringify("@everyone"),
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(true);
+  });
+
+  test("blacklisted user blocked even if both lists would allow", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify("@everyone"),
+      config_use: JSON.stringify("@everyone"),
+      config_blacklist: JSON.stringify([OTHER_ID]),
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(false);
+  });
+
+  test("non-owner allowed by role in both lists", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify([`role:${ROLE_ID}`]),
+      config_use: JSON.stringify([`role:${ROLE_ID}`]),
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [ROLE_ID], OTHER_ID, "otherName", [ROLE_ID])).toBe(true);
+  });
+
+  test("editList @everyone + default useList (null = allow all) grants access", () => {
+    const entity = createEntity("TestEntity", OWNER_ID);
+    setEntityConfig(entity.id, {
+      config_edit: JSON.stringify("@everyone"),
+      // no config_use set — defaults to null (allow all)
+    });
+    expect(checkCanSendAs(entity.id, entity.owned_by, [], OTHER_ID, "otherName")).toBe(true);
   });
 });

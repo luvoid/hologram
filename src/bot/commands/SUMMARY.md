@@ -5,7 +5,7 @@ Slash command definitions and interaction routing. All user-facing Discord comma
 ## Key Files
 
 - `cmd-admin.ts` — The `/admin` slash command with subcommand groups: `mute` (create/list/remove/clear), `disable`/`enable` channel/server (kill switches), `config` rate/chain (modal-based), and `audit` (mod event log). Per-subcommand permission checks (Manage Messages/Channels/Webhooks/Administrator). Exports `parseAdminOptions` (subcommand group parser) and `parseDuration` ("10m"|"1h"|"1d"|"forever" → SQLite timestamp) for testing.
-- `commands.ts` — The core slash commands: `/create`, `/view`, `/delete`, `/transfer`, `/bind`, `/unbind`, `/config`, `/config-chain`, `/sendnote`, `/trigger`, `/forget`. Also re-exports permission helpers from `cmd-permissions.ts`. Each command is registered via `registerCommand()` from `index.ts`.
+- `commands.ts` — The core slash commands: `/create`, `/view`, `/delete`, `/transfer`, `/bind`, `/unbind`, `/config`, `/config-chain`, `/sendnote`, `/trigger`, `/forget`, `/sendas`. Also re-exports permission helpers from `cmd-permissions.ts`. Each command is registered via `registerCommand()` from `index.ts`.
 - `cmd-edit.ts` — The `/edit` command and all its modal handlers (facts, config, system prompt, advanced, permissions). Handles multiple `type:` variants using Discord modals and select menus.
 - `cmd-debug.ts` — The `/debug` command with subcommands: `status`, `prompt`, `context`, `rag`. Shows entity state, rendered prompt/context, and embedding/RAG debug info. `/debug status` also shows system note count and recent note previews.
 - `cmd-permissions.ts` — Permission helper functions shared across commands: `canUserEdit`, `canUserView`, `canUserUse`, `canUserDelete`, `canUserBindInLocation`, `canUserPersonaInLocation`, `canUserSendNoteInLocation`, and `canOwnerReadChannel` (async Discord API check — confused-deputy prevention).
@@ -21,5 +21,6 @@ Slash command definitions and interaction routing. All user-facing Discord comma
 - Role IDs use a `role:` prefix in permission lists to distinguish from user IDs.
 - Zero selections on view/edit/use stores `"@everyone"`; zero on blacklist/delete stores `null`.
 - Confused-deputy prevention: server-bound entities skip channels whose owner lacks Discord VIEW_CHANNEL + READ_MESSAGE_HISTORY.
-- `/sendnote` permission: default gate is MANAGE_CHANNELS; `/config sendnote` allowlist overrides this. `canUserSendNoteInLocation` returns `null` when no allowlist is set (caller checks Discord permissions) or `true`/`false` when an allowlist is configured.
+- `/sendnote` permission: default gate is MANAGE_MESSAGES (8192); `/config sendnote` allowlist overrides this. `canUserSendNoteInLocation` returns `null` when no allowlist is set (caller checks Discord permissions) or `true`/`false` when an allowlist is configured.
+- `/sendas entity:<name> content:<text>` sends a message as a named entity (requires both edit AND use permission) or as `@system` (requires MANAGE_WEBHOOKS). Entity path sends via webhook + stores in DB; `@system` path stores with `is_system: true`.
 - `/purge` operates on both webhook messages and system notes; system note deletion is DB-only (no Discord API call).

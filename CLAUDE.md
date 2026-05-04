@@ -221,7 +221,8 @@ Permission lists are stored as JSON arrays in entity config columns. Role IDs us
 | `/bind <target> <entity>` | Bind channel/user (requires entity edit/use + Manage Channels for channel-bind or Manage Server for server-bind by default; `/config bind` lets admins delegate to others) |
 | `/unbind <target> <entity>` | Unbind channel/user (same permissions as bind) |
 | `/config <scope>` | Configure channel/server bind/sendnote permissions (Manage Channels). Includes `sendnote` allowlist field. |
-| `/sendnote <content>` | Add an invisible system-role note to the channel's AI context (requires Manage Channels or `/config sendnote` allowlist) |
+| `/sendnote <content>` | Add an invisible system-role note to the channel's AI context (requires Manage Messages or `/config sendnote` allowlist) |
+| `/sendas <entity> <content>` | Send a message as an entity (requires entity edit+use) or as `@system` (requires Manage Webhooks) |
 | `/debug [status]` | Channel state (default); shows system note count and recent note previews |
 | `/debug prompt [entity]` | Show system prompt for entity |
 | `/debug context [entity]` | Show message context for entity |

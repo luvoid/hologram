@@ -39,12 +39,13 @@ Not everyone needs to respond to every message. Only respond as those who would 
   {{- "\n" -}}
   {% for msg in history %}
     {{- "\n" if not loop.first -}}
-    {% if msg.data_role %}
-    {% call send_as(msg.data_role) -%}
-      {{ msg.content }}
+    {% set is_system_msg = true if (msg.is_note or msg.is_system) else false %}
+    {% set is_assistant = true if (not is_system_msg and responders[msg.entity_id]) else false %}
+    {% if is_system_msg %}
+    {% call send_as("system") -%}
+      {{ msg.author }}: {{ parse_emojis(msg.content) }}
     {%- endcall %}
     {% else %}
-    {% set is_assistant = true if responders[msg.entity_id] else false %}
     {% call send_as("assistant" if is_assistant else "user") -%}
       {{ msg.author }}: {{ parse_emojis(msg.content) }}
       {%- if not is_assistant %}

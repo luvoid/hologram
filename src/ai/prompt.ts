@@ -385,8 +385,10 @@ export function buildPromptAndMessages(
     created_at: string;
     is_bot: boolean;
     entity_id: number | null;
-    /** Explicit role override from message data (e.g. "system" for /sendnote entries). */
-    data_role: string | null;
+    /** True for /sendnote entries — rendered as system-role context in templates. */
+    is_note: boolean;
+    /** True for /sendas @system entries — rendered as system-role context in templates. */
+    is_system: boolean;
     embeds: EmbedData[] & { toJSON(): string };
     stickers: StickerData[] & { toJSON(): string };
     attachments: AttachmentData[] & { toJSON(): string };
@@ -427,7 +429,6 @@ export function buildPromptAndMessages(
     const stickers = withToJSON(data?.stickers ?? []);
     const attachments = withToJSON(withAttachmentDefaults(data?.attachments ?? []));
     const components = withToJSON(data?.components ?? []);
-    const dataRole = data?.role ?? null;
     const entry: HistoryEntry = {
       author: m.author_name,
       content,
@@ -435,12 +436,13 @@ export function buildPromptAndMessages(
       created_at: m.created_at,
       is_bot: data?.is_bot ?? false,
       entity_id: webhookEntity?.entityId ?? (!(data?.is_bot) ? resolvePersona(m.author_id, guildId, channelId) : null),
-      data_role: dataRole,
+      is_note: data?.is_note ?? false,
+      is_system: data?.is_system ?? false,
       embeds,
       stickers,
       attachments,
       components,
-      toJSON: () => JSON.stringify({ author: entry.author, content: entry.content, author_id: entry.author_id, created_at: entry.created_at, is_bot: entry.is_bot, entity_id: entry.entity_id, data_role: entry.data_role, embeds: data?.embeds ?? [], stickers: data?.stickers ?? [], attachments: data?.attachments ?? [], components: data?.components ?? [] }),
+      toJSON: () => JSON.stringify({ author: entry.author, content: entry.content, author_id: entry.author_id, created_at: entry.created_at, is_bot: entry.is_bot, entity_id: entry.entity_id, is_note: entry.is_note, is_system: entry.is_system, embeds: data?.embeds ?? [], stickers: data?.stickers ?? [], attachments: data?.attachments ?? [], components: data?.components ?? [] }),
     };
     history.push(entry);
     totalChars += len;

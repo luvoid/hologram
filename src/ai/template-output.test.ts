@@ -65,7 +65,7 @@ function buildTemplateContext(
   entities: EvaluatedEntity[],
   others: EntityWithFacts[],
   memories?: Map<number, Array<{ content: string }>>,
-  history?: Array<{ author: string; content: string; author_id: string; entity_id?: number | null }>,
+  history?: Array<{ author: string; content: string; author_id: string; entity_id?: number | null; is_note?: boolean; is_system?: boolean }>,
 ): Record<string, unknown> {
   const memoriesObj: Record<number, string[]> = Object.create(null);
   if (memories) {
@@ -90,6 +90,8 @@ function buildTemplateContext(
       created_at: "2024-01-01",
       is_bot: false,
       entity_id: h.entity_id ?? null,
+      is_note: h.is_note ?? false,
+      is_system: h.is_system ?? false,
       embeds: [],
       stickers: [],
       attachments: [],
@@ -287,6 +289,58 @@ describe("DEFAULT_TEMPLATE: chat messages", () => {
     const output = renderStructuredTemplate(DEFAULT_TEMPLATE, ctx);
     expect(output.messages.length).toBe(1);
     expect(output.messages[0].role).toBe("system");
+  });
+
+  test("is_note=true message renders as system role with author prefix", () => {
+    const entities = [mockEntity({ id: 1, name: "Aria", facts: ["is a character"] })];
+    const history = [
+      { author: "note", content: "Remember: stay in character", author_id: "admin-1", is_note: true },
+      { author: "Alice", content: "Hello!", author_id: "100" },
+    ];
+    const ctx = buildTemplateContext(entities, [], undefined, history);
+    const output = renderStructuredTemplate(DEFAULT_TEMPLATE, ctx);
+
+    expect(output.messages.length).toBe(3);
+    // The note entry should be system-role
+    const noteMsg = output.messages.find(m => m.content.includes("Remember: stay in character"));
+    expect(noteMsg).toBeDefined();
+    expect(noteMsg!.role).toBe("system");
+    expect(norm(noteMsg!.content)).toBe("note: Remember: stay in character");
+    // The regular message should be user-role
+    const userMsg = output.messages.find(m => m.content.includes("Hello!"));
+    expect(userMsg).toBeDefined();
+    expect(userMsg!.role).toBe("user");
+  });
+
+  test("is_system=true message renders as system role with author prefix", () => {
+    const entities = [mockEntity({ id: 1, name: "Aria", facts: ["is a character"] })];
+    const history = [
+      { author: "system", content: "The sun sets over the horizon.", author_id: "bot-1", is_system: true },
+      { author: "Alice", content: "Wow beautiful!", author_id: "100" },
+    ];
+    const ctx = buildTemplateContext(entities, [], undefined, history);
+    const output = renderStructuredTemplate(DEFAULT_TEMPLATE, ctx);
+
+    expect(output.messages.length).toBe(3);
+    const sysMsg = output.messages.find(m => m.content.includes("The sun sets"));
+    expect(sysMsg).toBeDefined();
+    expect(sysMsg!.role).toBe("system");
+    expect(norm(sysMsg!.content)).toBe("system: The sun sets over the horizon.");
+    // Normal message is user-role
+    const userMsg = output.messages.find(m => m.content.includes("Wow beautiful!"));
+    expect(userMsg!.role).toBe("user");
+  });
+
+  test("is_note=false and is_system=false renders as normal user/assistant", () => {
+    const entities = [mockEntity({ id: 1, name: "Aria", facts: ["is a character"] })];
+    const history = [
+      { author: "Alice", content: "Hi", author_id: "100", is_note: false, is_system: false },
+    ];
+    const ctx = buildTemplateContext(entities, [], undefined, history);
+    const output = renderStructuredTemplate(DEFAULT_TEMPLATE, ctx);
+
+    const histMsg = output.messages.find(m => m.content.includes("Hi"));
+    expect(histMsg!.role).toBe("user");
   });
 });
 
